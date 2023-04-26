@@ -1,0 +1,267 @@
+#include "cache.h"
+#include <queue>
+
+
+#define NUM_OFFSETS 46
+#define LOG2_RR_TABLE_SIZE 6 // RR Table has 2^6 entries
+#define SCORE_MAX 10
+#define ROUND_MAX 50
+#define BAD_SCORE 3 // Depends on Cache size
+#define LOW_SCORE 20
+#define BW 64 // Canbe changed to 16
+#define MAX_GAUGE 8191
+#define MAX_LLC_RATE 255 	// since the paper used 8 bits for LLC rate, it must be <= 255 (can be changed)
+#define QUEUE_CYCLE_DELAY 30
+
+int offset[NUM_OFFSETS] = {-11,12,-12,13,-13,14,-14,15,-15,16,-16,18,-18,20,-20,24,-24,30,-30,32,-32,36,-36,40,-40,1,-1,2,-2,3,-3,4,-4,5,-5,6,-6,7,-7,8,-8,9,-9,10,-10,11};
+int score[NUM_OFFSETS];
+int curr_offset;
+int RR_table[2][1<<LOG2_RR_TABLE_SIZE];
+std::queue<int> DQ; // Delay Queue 
+std::queue<int> insert_cycle; // cycle number when the entry was put in DQ
+int last_prefetch_cycle; 
+int max_mshr_threshold;		// static
+int min_mshr_threshold;		// static
+
+int mshr_threshold;
+int LLC_Rate;
+int Gauge;
+
+int offset_index;
+int curr_max_score;
+int curr_round;
+int curr_max_index;
+
+bool * prefetch_array;
+
+int best_offset_score; 
+
+//------------------------------------------------------------ For Updating MSHR Threshold -------------------------------------------------------
+void update_MSHR_threshold(int best_score){
+	if (best_score > LOW_SCORE || LLC_Rate > 2*BW){
+		mshr_threshold = max_mshr_threshold;
+	}
+	else if (LLC_Rate < BW){
+		mshr_threshold = min_mshr_threshold;
+	}
+	else if (LLC_Rate >= BW && LLC_Rate <= 2*BW) {
+		mshr_threshold = min_mshr_threshold + (LLC_Rate-BW)*(double)(max_mshr_threshold-min_mshr_threshold)/BW;
+	}
+}
+
+void update_gauge(int current_cycle){
+	int dt = current_cycle - last_prefetch_cycle;
+	last_prefetch_cycle = current_cycle;
+	Gauge += dt - LLC_Rate;
+
+	if (Gauge > MAX_GAUGE){
+		Gauge = MAX_GAUGE;
+		if (LLC_Rate < MAX_LLC_RATE){
+			LLC_Rate++;
+		}
+	}
+	else if (Gauge < 0){
+		if (LLC_Rate > 0){
+			LLC_Rate--;
+		}
+	}
+	update_MSHR_threshold(best_offset_score);
+}
+
+
+//--------------------------------------------------------------- RR Table Functions ---------------------------------------------------------
+// Taking a hash of the address and extracting only the first 64 bits (for the index to be in the RR Table)
+int left_hash(uint64_t addr){
+	return((addr^(addr>>LOG2_RR_TABLE_SIZE)) & ((1<<LOG2_RR_TABLE_SIZE) -1));
+}
+
+
+// Taking a hash of the address and extracting only the first 64 bits (for the index to be in the RR Table)
+int right_hash(uint64_t addr){
+	return((addr^(addr>>2*LOG2_RR_TABLE_SIZE)) & ((1<<LOG2_RR_TABLE_SIZE) -1)); 
+}
+
+// Returning the address with the offset part truncated and the rest of the address right shifted appropriately
+int get_rr_tag(uint64_t addr){
+	return(addr>>LOG2_RR_TABLE_SIZE);
+}
+
+// The function returns hit (1) if the tag (Tag + Set portion) of the address stored in the RR_Table, corresponding to the address is present 
+// in either of the columns 
+int rr_table_hit(uint64_t addr, int offset){
+	int rr_tag = get_rr_tag(addr - (offset<<LOG2_RR_TABLE_SIZE)); // get the tag stored in the RR table
+	int left_index = left_hash(addr - (offset<<LOG2_RR_TABLE_SIZE)); // get the index to which line address is hashed to in the left column
+	int right_index = right_hash(addr - (offset<<LOG2_RR_TABLE_SIZE)); // get the index in the RR table to which the line address is hashed to in the right column
+
+	return (RR_table[0][left_index] == rr_tag || RR_table[1][right_index] == rr_tag);
+}
+
+void right_insert_RR(int cycle, int addr){
+    // Insert the tag into the right bank
+    int right_index = right_hash(addr - (curr_offset<<LOG2_RR_TABLE_SIZE));
+    int rr_tag = get_rr_tag(addr)-curr_offset; // inserting the tag for X-O into the RR table
+
+    RR_table[1][right_index] = rr_tag;
+}
+
+void left_insert_RR(int cycle, int addr, int occupancy){
+    // Insert the offsetted address into the Delay Queue to further insert into the left bank after 60 cycle delay
+
+	if (occupancy < mshr_threshold){
+		DQ.push(addr - (curr_offset<<LOG2_RR_TABLE_SIZE));
+		insert_cycle.push(cycle);
+	}
+
+    // check for the first index in the cycle and insert tag into left bank
+    int tail_cycle = insert_cycle.front();
+    while(cycle - tail_cycle > QUEUE_CYCLE_DELAY || DQ.size() >= 15){
+        // pop the oldest tag
+        int offsetted_addr = DQ.front();
+        DQ.pop();
+        insert_cycle.pop();
+        
+        if(insert_cycle.empty()){
+            break;
+        }
+        else{
+            tail_cycle = insert_cycle.front();
+        }
+
+        // Insert tag into RR table
+        int left_index = left_hash(offsetted_addr);
+        int rr_tag = get_rr_tag(offsetted_addr);
+
+        RR_table[0][left_index] = rr_tag;
+    }
+}
+//-------------------------------------------------------------------------------------------------------------------------------------------------
+
+int get_current_offset(int addr, int occupancy, int cycle){
+	
+    // Fill the left bank of the RR table
+    left_insert_RR(cycle, addr, occupancy);
+
+    // Updating score by checking hit
+    if(rr_table_hit(addr, offset[offset_index])){
+        score[offset_index]++;
+
+        // Updating max score and current_offset
+        if (score[offset_index] > curr_max_score){
+            curr_max_index = offset_index;
+            curr_max_score = score[offset_index];
+        }
+    }
+    // Update offset_index to check next offset in the next iteration in the round
+    offset_index++;
+
+    // Handling wrapping around of offset_index - if it wraps around, then round finish
+    if (offset_index == NUM_OFFSETS){
+        offset_index = 0;
+        curr_round++;
+    }
+	
+    // Check end of phase
+	if (curr_max_score >= SCORE_MAX || curr_round >= ROUND_MAX){
+		curr_offset = offset[curr_max_index];
+		if (curr_max_score < BAD_SCORE) curr_offset = 0;
+		update_gauge(cycle);
+		// Resetting all the state variables to initial values at the end of a phase
+		if (mshr_threshold <= occupancy){
+			curr_offset = 0;
+		}
+        for(int i = 0;i<NUM_OFFSETS;i++){
+            score[i] = 0;
+        }
+        curr_round = 0;
+        curr_max_score = 0;
+        curr_max_score = 0;
+        offset_index = 0;
+	}
+	else {
+		update_gauge(cycle);
+	}
+    
+    return curr_offset;
+} 
+//--------------------------------------------------------------- Common functions to all prefetching policies -------------------------------------
+void CACHE::l2c_prefetcher_initialize() 
+{	
+	// Initializing scores of all offsets to 0
+	for(int i = 0;i<NUM_OFFSETS;i++){
+		score[i] = 0;
+	}
+	
+	// Initializing current offset to 1
+	curr_offset = 1;
+	
+	// Initializing the RR Table
+	for(int i = 0;i<1<<LOG2_RR_TABLE_SIZE;i++){
+		RR_table[0][i] = 0;
+		RR_table[1][i] = 0;
+	}
+
+	last_prefetch_cycle = 0;
+	max_mshr_threshold = MSHR.SIZE - 4;
+	min_mshr_threshold = 2;
+	mshr_threshold = max_mshr_threshold;
+
+	LLC_Rate = 0;
+	Gauge = MAX_GAUGE/2;
+
+    offset_index = 0;
+	curr_max_index = 0;
+	curr_max_score = 0;
+	curr_round = 0;	
+	best_offset_score = SCORE_MAX;;
+
+	prefetch_array = new bool [NUM_SET*NUM_WAY];
+	for (int i = 0; i < NUM_SET; i++){
+		for (int j = 0; j < NUM_WAY; j++){
+			prefetch_array[i*NUM_WAY+j] = 0;
+		}
+	}
+}
+
+uint32_t CACHE::l2c_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint32_t metadata_in)
+{
+  	int occupancy = MSHR.occupancy;
+	int cycle = current_core_cycle[cpu];
+	int O;
+	uint64_t pf_addr;
+	
+	bool hit = (cache_hit > 0)? 1 : 0;
+	bool is_prefetch = 0;
+	if (hit){
+		int s = get_set(addr >> LOG2_RR_TABLE_SIZE);
+		int w = get_way(addr >> LOG2_RR_TABLE_SIZE, s);
+		is_prefetch = prefetch_array[s*NUM_WAY+w];
+		prefetch_array[s*NUM_WAY+w] = 0;
+	}
+
+	if (!hit || is_prefetch){
+		O = get_current_offset(addr, occupancy, cycle);
+		if (O != 0){
+			pf_addr = ((addr >> LOG2_BLOCK_SIZE) + O) << LOG2_BLOCK_SIZE;
+			prefetch_line(ip, addr, pf_addr, FILL_L2, 0);
+		}
+		
+	}
+	std::cout<<"Best offset: "<<curr_offset<<std::endl;
+	for(int i = 0;i<NUM_OFFSETS;i++){std::cout<<score[i]<<" ";}
+	std::cout<<std::endl;
+  	return metadata_in;
+}
+
+uint32_t CACHE::l2c_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+{
+	int cycle = current_core_cycle[cpu];
+	right_insert_RR(cycle, addr << LOG2_RR_TABLE_SIZE);
+	prefetch_array[set*NUM_WAY+way] = prefetch;
+  	return metadata_in;
+}
+
+void CACHE::l2c_prefetcher_final_stats()
+{
+	
+
+}

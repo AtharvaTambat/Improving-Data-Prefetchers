@@ -1,0 +1,112 @@
+/*****************************************************
+For the Third Data Prefetching Championship - DPC3
+
+Paper ID: #4
+Instruction Pointer Classifying Prefetcher - IPCP
+
+Authors:
+Samuel Pakalapati - pakalapatisamuel@gmail.com
+Biswabandan Panda - biswap@cse.iitk.ac.in
+******************************************************/
+
+
+#include "cache.h"
+
+int arr[256];
+uint64_t pre = 0;
+int counter = 0;
+int prog = 0;
+int th = 10;
+int N = 4;
+bool done[64];
+
+
+
+void CACHE::llc_prefetcher_initialize() 
+{
+  for (int i = 0; i < 256; i++){
+    arr[i] = 0;
+    done[i] = 0;
+  }
+}
+
+uint32_t CACHE::llc_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint32_t metadata_in)
+{
+  uint64_t curr_page = addr >> LOG2_PAGE_SIZE;
+  uint64_t cl_page = (((addr >> LOG2_PAGE_SIZE) << LOG2_PAGE_SIZE)) >> LOG2_BLOCK_SIZE;
+  uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
+  // if (pre != curr_page && counter > th){
+  //   counter--;
+  // }
+  if (pre != curr_page){
+    counter--;
+    pre = curr_page;
+    for (int i = 0; i < 64; i++){
+      done[i] = 0;
+    }
+  }
+  else counter++;
+  // int64_t d = curr_page - pre;
+  // if (d <= 100 && d >= -100){
+  //   arr[d+100]++;
+  // }
+  // counter[curr_page%256]++;
+  cout<<curr_page<<endl;
+
+  if (counter > th){
+    int depth = 4;
+    for (uint64_t i = cl_addr+1; i < cl_page + 64; i++){
+      // if (done[i-cl_page]){
+      //   continue;
+      // }
+      // else{
+        uint64_t pf_address = ((i) << LOG2_BLOCK_SIZE);
+        prefetch_line(ip, addr, pf_address, FILL_LLC, metadata_in);
+        done[i-cl_page] = 1;
+        depth--;
+      // }
+      // cout << i - cl_page << endl;;
+      if (!depth) break;
+    }
+  }
+
+    if (counter > th + 2){
+    int depth = 5;
+    for (uint64_t i = cl_page+1; i < cl_page + 64; i++){
+      if (done[i-cl_page]){
+        continue;
+      }
+      else{
+        uint64_t pf_address = ((i) << LOG2_BLOCK_SIZE);
+        prefetch_line(ip, addr, pf_address, FILL_LLC, 0);
+        done[i - cl_page] = 1;
+        depth--;
+      }
+      if (!depth) break;
+    }
+  }
+
+  return metadata_in;
+}
+
+uint32_t CACHE::llc_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+{
+  return metadata_in;
+}
+
+void CACHE::llc_prefetcher_final_stats()
+{
+  // cout << " LLC page access stats " << endl;
+  // for (int i = 0; i < 100; i++){
+  //   cout << arr[i] << " ";
+  // }
+  // cout << endl;
+  // for (int i = 0; i <= 100; i++){
+  //   cout << arr[i+100] << " ";
+  // }
+  // cout < "----------------------------" << endl;
+  cout << endl;
+}
+
+
+
