@@ -335,30 +335,7 @@ cout << trackers_l1[cpu][index].last_stride << ", " << stride << ", " << tracker
         }
     } 
     
-    // else if(DPT_l1[cpu][signature].conf >= 0 && DPT_l1[cpu][signature].delta != 0) {  // if conf>=0, continue looking for delta
-    //     int pref_offset = 0,i=0;                                                        // CPLX IP
-    //     for (i=0; i<prefetch_degree; i++) {
-    //         pref_offset += DPT_l1[cpu][signature].delta;
-    //         uint64_t pf_address = ((cl_addr + pref_offset) << LOG2_BLOCK_SIZE);
-
-    //         // Check if prefetch address is in same 4 KB page
-    //         if (((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)) || 
-    //                 (DPT_l1[cpu][signature].conf == -1) ||
-    //                 (DPT_l1[cpu][signature].delta == 0)){
-    //             // if new entry in DPT or delta is zero, break
-    //             break;
-    //         }
-
-    //         // we are not prefetching at L2 for CPLX type, so encode delta as 0
-    //         metadata = encode_metadata(pref_offset, CPLX_TYPE, spec_nl[cpu]);
-    //         if(DPT_l1[cpu][signature].conf > 0){                                 // prefetch only when conf>0 for CPLX
-    //             prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
-    //             num_prefs++;
-    //             SIG_DP(cout << pref_offset << ", ");
-    //         }
-    //         signature = update_sig_l1(signature, DPT_l1[cpu][signature].delta);
-    //     }
-    // } 
+    /*************************************RIP COMPLEX CLASS*********************************************/
 
 // if no prefetches are issued till now, speculatively issue a next_line prefetch
 if(num_prefs == 0 && spec_nl[cpu] == 1){                                        // NL IP

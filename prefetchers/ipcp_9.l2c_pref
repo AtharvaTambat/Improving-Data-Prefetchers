@@ -153,6 +153,7 @@ uint32_t CACHE::l2c_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache
                 SIG_DP(cout << trackers[cpu][index].stride << ", ");
             }
         }
+        /**************************************ADDED CMPLX PREFETCHING***********************************************/
         else if (trackers[cpu][index].pref_type == 0x300){
             int i = 0; // CPLX IP
             for (i = 0; i < prefetch_degree; i++)
@@ -168,6 +169,7 @@ uint32_t CACHE::l2c_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache
             }
 
         }
+        /************************************************************************************************************/
         else if (trackers[cpu][index].pref_type == 0x400 && spec_nl_l2[cpu] > 0)
         {
             uint64_t pf_address = ((addr >> LOG2_BLOCK_SIZE) + 1) << LOG2_BLOCK_SIZE;

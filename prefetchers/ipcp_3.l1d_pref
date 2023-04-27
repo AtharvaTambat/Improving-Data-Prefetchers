@@ -76,13 +76,13 @@ int spec_nl[NUM_CPUS] = {0};
 
 int jump[41];
 uint64_t prev_add = 0;
-// int prev_dif = 0;
-// int stat = 0;
-int tot = 0;
-int f = 0,s = 0;
+
+/*****************initializing variables required for the modified next line prefetcher****************/
+int tot = 0;                                                           // to store the total number of delta values observed
+int f = 0,s = 0;                                                       // for stats
 int pre = 1;
-int nl = 1;
-int maxi = 1;
+int nl = 1;                                                             // the offset of the line which is to be prefetched
+int maxi = 1;                                                           // to store offset (delta) which occurs maximum number of times in the last 1000 delta observed
 
 
 
@@ -97,7 +97,6 @@ uint16_t update_sig_l1(uint16_t old_sig, int delta){
 
     return new_sig;
 }
-
 
 
 /****************Encoding the metadata***********************************/
@@ -203,14 +202,10 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
     uint32_t metadata=0;
     uint16_t ip_tag = (ip >> NUM_IP_INDEX_BITS) & ((1 << NUM_IP_TAG_BITS)-1);
 
+    /**************************Updating the parameters for modified next line prefetching***********************/
     int j = cl_addr - prev_add;
     nl = pre;
-    // if (j == -1){
-    //     s++;
-    // }
-    // if (j == 1){
-    //     f++;
-    // }
+
     if (j >= 0 && j <= 20){
         jump[2*j]++;
         if (maxi < jump[2*j]){
@@ -229,23 +224,10 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
             jump[i] = 0;
         }
     }
-    // if (tot%10 == 0){
-    //     // cout << 2;
-    //     pre = f;
-    //     if (s > f){
-    //         pre = s;
-    //         // cout << 1;
-    //     }
-    //     // for (int )
-    //     s = 0;
-    //     f = 0;
-    // }
-    // for (int i = 0; i < 41; i++){
-    //     if 
-    // }
 
     prev_add = cl_addr;
     tot++;
+    /***************************************************************************************************************/
 
 if(NUM_CPUS == 1){
     prefetch_degree = 3;

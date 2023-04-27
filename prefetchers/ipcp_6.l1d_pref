@@ -40,9 +40,9 @@ class IP_TABLE_L1 {
     uint16_t str_dir;                                       // stream direction
     uint16_t str_valid;                                     // stream valid
     uint16_t str_strength;                                  // stream strength
-    int pc1;
-    int pc2;
-    int pc3;
+    int pc1;                                                // current pc geerating memory access
+    int pc2;                                                // previous pc geerating memory access
+    int pc3;                                                // prev prev pc generating memory access
 
     IP_TABLE_L1 () {
         ip_tag = 0;
@@ -72,6 +72,7 @@ public:
     };        
 };
 
+// to store delta (stride values) and their corresponding confidence related to the PC hash 
 class DELTA_PRED_PC {
 public:
     int delta;
@@ -83,6 +84,7 @@ public:
     }
 };
 
+// to store delta (stride values) and their corresponding confidence related to the PAGE ^ GLOBAL CONFIDENCE hash
 class DELTA_PAGE_XOR_CONF {
 public:
     int delta;
@@ -123,10 +125,12 @@ uint16_t update_sig_l1(uint16_t old_sig, int delta){
     return new_sig;
 }
 
+// return index corresponding to the PC hash
 uint16_t pc_hash(uint16_t pc1, uint16_t pc2, uint16_t pc3){
     return ((pc1)^(pc2>>1)^(pc3>>2)) & ((1<<12) - 1);
 }
 
+// return index corresponding to the curr_page address
 uint16_t page_xor_conf_hash(uint curr_page){
     return ((curr_page)^GLOBAL_CONFIDENCE) & ((1<<(24 - LOG2_PAGE_SIZE)) - 1);
 }
@@ -387,6 +391,8 @@ cout << last_signature<< ", "  << DPT_l1[cpu][last_signature].delta<< ", "  << D
 cout << trackers_l1[cpu][index].last_stride << ", " << stride << ", " << trackers_l1[cpu][index].conf << ", " << "; ";
 );
 
+    /************************REORDERING OF THE CHECKS FOR CLASS OF STRIDE*************************************************/
+    // First Complex
     if(DPT_l1[cpu][signature].conf + DPT_PC_l1[cpu][new_hash].conf  + 3*DPT_PAGE_XOR_CONF_l1[cpu][new_page_xor_conf_hash].conf >= 0 && DPT_l1[cpu][signature].delta != 0) {  // if conf>=0, continue looking for delta
         int pref_offset = 0,i=0;                                                        // CPLX IP
         for (i=0; i<prefetch_degree; i++) {
@@ -415,6 +421,7 @@ cout << trackers_l1[cpu][index].last_stride << ", " << stride << ", " << tracker
             new_page_xor_conf_hash = page_xor_conf_hash(pf_address >> LOG2_PAGE_SIZE);
         }
     } 
+    // Then Constant stride
     else if(trackers_l1[cpu][index].conf > 1 && trackers_l1[cpu][index].last_stride != 0){            // CS IP  
         for (int i=0; i<prefetch_degree; i++) {
             uint64_t pf_address = (cl_addr + (trackers_l1[cpu][index].last_stride*(i+1))) << LOG2_BLOCK_SIZE;
@@ -431,7 +438,7 @@ cout << trackers_l1[cpu][index].last_stride << ", " << stride << ", " << tracker
             SIG_DP(cout << trackers_l1[cpu][index].last_stride << ", ");
         }
     } 
-
+    // Then Global stride
     else if(trackers_l1[cpu][index].str_valid == 1){                         // stream IP
         // for stream, prefetch with twice the usual degree
             prefetch_degree = prefetch_degree*2;

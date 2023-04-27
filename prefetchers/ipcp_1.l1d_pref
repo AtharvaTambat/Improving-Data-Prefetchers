@@ -41,9 +41,9 @@ class IP_TABLE_L1 {
     uint16_t str_dir;                                       // stream direction
     uint16_t str_valid;                                     // stream valid
     uint16_t str_strength;                                  // stream strength
-    int pc1;
-    int pc2;
-    int pc3;
+    int pc1;                                                // pc value of the current instruction which generated memory access
+    int pc2;                                                // pc value of the prev instruction which generated memory access
+    int pc3;                                                // pc value of the prev prev instruction which generated memory access
 
     IP_TABLE_L1 () {
         ip_tag = 0;
@@ -73,6 +73,7 @@ public:
     };        
 };
 
+// class to maintain confidence related to pc ^ prev pc ^ prev prev pc
 class DELTA_PRED_PC {
 public:
     int delta;
@@ -84,6 +85,7 @@ public:
     }
 };
 
+// For stats
 // int jump[1001];
 // uint64_t prev_add = 0;
 // int prev_dif = 0;
@@ -91,38 +93,6 @@ public:
 // int tot = 0;
 // int f = 0,s = 0;
 // int pre = 1;
-
-// class Buffer {
-//     uint64_t pc;
-//     uint64_t addr1;
-//     uint64_t addr2;
-// public:
-//     Buffer(){
-//         pc = 0;
-//         addr1 = 0;
-//         addr2 = 0;
-//     }
-// }
-
-// class Temporal {
-//     uint64_t * addr1, * addr2, * hash;
-//     int N;
-// public:
-//     Temporal(int N){
-//         this->N = N;
-//         hash = new uint64_t [N];
-//         addr1 = new uint64_t [N];
-//         addr2 = new uint64_t [N];
-//         for (int i = 0; i < N; i++){
-//             hash[i] = 0;
-//             addr1[i] = 0;
-//             addr2[i] = 0;
-//         }
-//     }
-
-//     bool insert()
-// }
-
 
 
 IP_TABLE_L1 trackers_l1[NUM_CPUS][NUM_IP_TABLE_L1_ENTRIES];
@@ -151,6 +121,7 @@ uint16_t update_sig_l1(uint16_t old_sig, int delta){
     return new_sig;
 }
 
+// return the index of pc hash - 12 bit
 uint16_t pc_hash(uint16_t pc1, uint16_t pc2, uint16_t pc3){
     return ((pc1)^(pc2>>1)^(pc3>>2)) & ((1<<12) - 1);
 }
@@ -383,13 +354,13 @@ trackers_l1[cpu][index].conf = update_conf(stride, trackers_l1[cpu][index].last_
 if(trackers_l1[cpu][index].conf == 0)                      
     trackers_l1[cpu][index].last_stride = stride;
 
+// calculate the PC hash based parameters
 last_signature = trackers_l1[cpu][index].signature;
 last_pc1 = trackers_l1[cpu][index].pc1;
 last_pc2 = trackers_l1[cpu][index].pc2;
 last_pc3 = trackers_l1[cpu][index].pc3;
 
 int last_hash = pc_hash(last_pc1, last_pc2, last_pc3);
-
 
 // update complex stride(CPLX) confidence
 DPT_l1[cpu][last_signature].conf = update_conf(stride, DPT_l1[cpu][last_signature].delta, DPT_l1[cpu][last_signature].conf);
@@ -405,7 +376,7 @@ if(DPT_l1[cpu][last_signature].conf + DPT_PC_l1[cpu][last_hash].conf == 0){
 // calculate and update new signature in IP table
 signature = update_sig_l1(last_signature, stride);
 trackers_l1[cpu][index].signature = signature;
-// calculating the new pc1, pc2, pc3 values
+// updating the new pc1, pc2, pc3 values
 pc1 = ip;
 pc2 = last_pc1;
 pc3 = last_pc2;
@@ -480,7 +451,7 @@ cout << trackers_l1[cpu][index].last_stride << ", " << stride << ", " << tracker
 
             // we are not prefetching at L2 for CPLX type, so encode delta as 0
             metadata = encode_metadata(0, CPLX_TYPE, spec_nl[cpu]);
-            if(DPT_l1[cpu][signature].conf + DPT_PC_l1[cpu][new_hash].conf > CMPLX_THRESH){                                 // prefetch only when conf>0 for CPLX
+            if(DPT_l1[cpu][signature].conf + DPT_PC_l1[cpu][new_hash].conf > CMPLX_THRESH){                                 // prefetch only when conf>CMPLX thresh
                 prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
                 cmp_1++;
                 num_prefs++;

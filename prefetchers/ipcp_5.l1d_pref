@@ -40,9 +40,9 @@ class IP_TABLE_L1 {
     uint16_t str_dir;                                       // stream direction
     uint16_t str_valid;                                     // stream valid
     uint16_t str_strength;                                  // stream strength
-    int pc1;
-    int pc2;
-    int pc3;
+    int pc1;                                                // current pc geerating memory access
+    int pc2;                                                // previous pc geerating memory access
+    int pc3;                                                // prev prev pc generating memory access
 
     IP_TABLE_L1 () {
         ip_tag = 0;
@@ -72,6 +72,7 @@ public:
     };        
 };
 
+// to store delta (stride values) and their corresponding confidence related to the PC hash 
 class DELTA_PRED_PC {
 public:
     int delta;
@@ -83,6 +84,7 @@ public:
     }
 };
 
+// to store delta (stride values) and their corresponding confidence related to the PAGE ^ GLOBAL CONFIDENCE hash
 class DELTA_PAGE_XOR_CONF {
 public:
     int delta;
@@ -97,11 +99,13 @@ public:
 
 IP_TABLE_L1 trackers_l1[NUM_CPUS][NUM_IP_TABLE_L1_ENTRIES];
 DELTA_PRED_TABLE DPT_l1[NUM_CPUS][4096];
+
 // for storing the previous pc confidences
 DELTA_PRED_PC DPT_PC_l1[NUM_CPUS][4096];
 // for storing the previous page onfidences
 DELTA_PAGE_XOR_CONF DPT_PAGE_XOR_CONF_l1[NUM_CPUS][1<<(24 - LOG2_PAGE_SIZE)];
-int GLOBAL_CONFIDENCE = 0; // saturating counter from 0 to 100
+int GLOBAL_CONFIDENCE = 0; // saturating counter from 0 to 100 to denote global confidence
+
 uint64_t ghb_l1[NUM_CPUS][NUM_GHB_ENTRIES];
 uint64_t prev_cpu_cycle[NUM_CPUS];
 uint64_t num_misses[NUM_CPUS];
@@ -123,10 +127,12 @@ uint16_t update_sig_l1(uint16_t old_sig, int delta){
     return new_sig;
 }
 
+// return index corresponding to the PC hash
 uint16_t pc_hash(uint16_t pc1, uint16_t pc2, uint16_t pc3){
     return ((pc1)^(pc2>>1)^(pc3>>2)) & ((1<<12) - 1);
 }
 
+// return index corresponding to the curr_page address
 uint16_t page_xor_conf_hash(uint curr_page){
     return ((curr_page)^GLOBAL_CONFIDENCE) & ((1<<(24 - LOG2_PAGE_SIZE)) - 1);
 }
@@ -336,6 +342,7 @@ trackers_l1[cpu][index].conf = update_conf(stride, trackers_l1[cpu][index].last_
 if(trackers_l1[cpu][index].conf == 0)                      
     trackers_l1[cpu][index].last_stride = stride;
 
+// calculating parameters from the last prefetch request to update the current confidence values
 last_signature = trackers_l1[cpu][index].signature;
 last_pc1 = trackers_l1[cpu][index].pc1;
 last_pc2 = trackers_l1[cpu][index].pc2;
@@ -428,6 +435,7 @@ cout << trackers_l1[cpu][index].last_stride << ", " << stride << ", " << tracker
             num_prefs++;
             SIG_DP(cout << trackers_l1[cpu][index].last_stride << ", ");
         }
+        // defining a new confidence value
     } else if(DPT_l1[cpu][signature].conf + DPT_PC_l1[cpu][new_hash].conf + 3*DPT_PAGE_XOR_CONF_l1[cpu][new_page_xor_conf_hash].conf >= 0 && DPT_l1[cpu][signature].delta != 0) {  // if conf>=0, continue looking for delta
         int pref_offset = 0,i=0;                                                        // CPLX IP
         for (i=0; i<prefetch_degree; i++) {
