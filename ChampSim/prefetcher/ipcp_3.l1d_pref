@@ -19,8 +19,6 @@ Biswabandan Panda - biswap@cse.iitk.ac.in
 #define CS_TYPE 2                                           // constant stride
 #define CPLX_TYPE 3                                         // complex stride
 #define NL_TYPE 4                                           // next line
-#define ADT_size 8                                          // size of the access data table
-#define RT_TABLE_SIZE 16                                    // size of the rt table
 
 // #define SIG_DEBUG_PRINT
 #ifdef SIG_DEBUG_PRINT
@@ -67,49 +65,6 @@ public:
     };        
 };
 
-// Access data table
-class ADT {
-public:
-    int addr1;
-    int addr2;
-    int data1;
-    int data2;
-
-    ADT(){
-        addr1 = addr2 = 0;
-        data1 = data2 = 0;
-    }
-};
-
-// RT table to store the prefetch info - address to prefetchand conf etc.
-class RT_TABLE{
-public:
-    int producer;
-    int consumer;
-    int type; // to store the type of DD inferred - ponter based access and array-indirect access
-    int base_addr;
-    int size;
-    int predicted_addr;
-    int conf;
-
-    RT_TABLE(){
-        producer = 0;
-        consumer = 0;
-        type = 0;
-        base_addr = 0;
-        size = 0;
-        predicted_addr = 0;
-        conf = 0;
-    }
-};
-
-
-
-ADT adt[ADT_szie];
-RT_TABLE rt_table[RT_TABLE_SIZE];
-int PHASE = 0;
-// PHASE 0 means ADT population
-// PHASE 1 means ADT training
 
 IP_TABLE_L1 trackers_l1[NUM_CPUS][NUM_IP_TABLE_L1_ENTRIES];
 DELTA_PRED_TABLE DPT_l1[NUM_CPUS][4096];
@@ -118,6 +73,17 @@ uint64_t prev_cpu_cycle[NUM_CPUS];
 uint64_t num_misses[NUM_CPUS];
 float mpkc[NUM_CPUS] = {0};
 int spec_nl[NUM_CPUS] = {0};
+
+int jump[41];
+uint64_t prev_add = 0;
+
+/*****************initializing variables required for the modified next line prefetcher****************/
+int tot = 0;                                                           // to store the total number of delta values observed
+int f = 0,s = 0;                                                       // for stats
+int pre = 1;
+int nl = 1;                                                             // the offset of the line which is to be prefetched
+int maxi = 1;                                                           // to store offset (delta) which occurs maximum number of times in the last 1000 delta observed
+
 
 
 /***************Updating the signature*************************************/ 
@@ -131,6 +97,7 @@ uint16_t update_sig_l1(uint16_t old_sig, int delta){
 
     return new_sig;
 }
+
 
 /****************Encoding the metadata***********************************/
 uint32_t encode_metadata(int stride, uint16_t type, int spec_nl){
@@ -234,6 +201,33 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
     int num_prefs = 0;
     uint32_t metadata=0;
     uint16_t ip_tag = (ip >> NUM_IP_INDEX_BITS) & ((1 << NUM_IP_TAG_BITS)-1);
+
+    /**************************Updating the parameters for modified next line prefetching***********************/
+    int j = cl_addr - prev_add;
+    nl = pre;
+
+    if (j >= 0 && j <= 20){
+        jump[2*j]++;
+        if (maxi < jump[2*j]){
+            maxi = jump[2*j];
+        }
+    }
+    if (j < 0 && j >= -20){
+        jump[-2*j-1]++;
+        if (maxi < jump[-2*j-1]){
+            maxi = jump[-12*j-1];
+        }
+    }
+    if (tot%1000 == 0){
+        pre = maxi;
+        for (int i = 0; i < 41; i++){
+            jump[i] = 0;
+        }
+    }
+
+    prev_add = cl_addr;
+    tot++;
+    /***************************************************************************************************************/
 
 if(NUM_CPUS == 1){
     prefetch_degree = 3;
@@ -403,7 +397,7 @@ cout << trackers_l1[cpu][index].last_stride << ", " << stride << ", " << tracker
 
 // if no prefetches are issued till now, speculatively issue a next_line prefetch
 if(num_prefs == 0 && spec_nl[cpu] == 1){                                        // NL IP
-    uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE;  
+    uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+nl) << LOG2_BLOCK_SIZE;  
     metadata = encode_metadata(1, NL_TYPE, spec_nl[cpu]);
     prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
     SIG_DP(cout << "1, ");

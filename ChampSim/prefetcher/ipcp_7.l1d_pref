@@ -75,10 +75,6 @@ float mpkc[NUM_CPUS] = {0};
 int spec_nl[NUM_CPUS] = {0};
 
 
-// stats 
-int nl_1 = 0, gs_1 = 0, cs_1 = 0, cmp_1 = 0;
-
-
 /***************Updating the signature*************************************/ 
 uint16_t update_sig_l1(uint16_t old_sig, int delta){                           
     uint16_t new_sig = 0;
@@ -182,14 +178,11 @@ void CACHE::l1d_prefetcher_initialize()
 {
 
 }
-uint64_t pre = 0;
+
 void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type)
 {
 
     uint64_t curr_page = addr >> LOG2_PAGE_SIZE;
-    int del = curr_page-pre;
-    if (pre != 0) cout << del << endl;
-    pre = curr_page;
     uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
     uint64_t cl_offset = (addr >> LOG2_BLOCK_SIZE) & 0x3F;
     uint16_t signature = 0, last_signature = 0;
@@ -244,7 +237,6 @@ if(num_misses[cpu] == 256){
         uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE; // BASE NL=1, changing it to 3
         metadata = encode_metadata(1, NL_TYPE, spec_nl[cpu]);
         prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
-        nl_1++;
         return;
     }
     else {                                                     // if same IP encountered, set valid bit
@@ -324,7 +316,6 @@ cout << trackers_l1[cpu][index].last_stride << ", " << stride << ", " << tracker
 
             prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
             num_prefs++;
-            gs_1++;
             SIG_DP(cout << "1, ");
             }
 
@@ -339,42 +330,18 @@ cout << trackers_l1[cpu][index].last_stride << ", " << stride << ", " << tracker
 
             metadata = encode_metadata(trackers_l1[cpu][index].last_stride, CS_TYPE, spec_nl[cpu]);
             prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
-            cs_1++;
             num_prefs++;
             SIG_DP(cout << trackers_l1[cpu][index].last_stride << ", ");
         }
-    } else if(DPT_l1[cpu][signature].conf >= 0 && DPT_l1[cpu][signature].delta != 0) {  // if conf>=0, continue looking for delta
-        int pref_offset = 0,i=0;                                                        // CPLX IP
-        for (i=0; i<prefetch_degree; i++) {
-            pref_offset += DPT_l1[cpu][signature].delta;
-            uint64_t pf_address = ((cl_addr + pref_offset) << LOG2_BLOCK_SIZE);
-
-            // Check if prefetch address is in same 4 KB page
-            if (((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)) || 
-                    (DPT_l1[cpu][signature].conf == -1) ||
-                    (DPT_l1[cpu][signature].delta == 0)){
-                // if new entry in DPT or delta is zero, break
-                break;
-            }
-
-            // we are not prefetching at L2 for CPLX type, so encode delta as 0
-            metadata = encode_metadata(0, CPLX_TYPE, spec_nl[cpu]);
-            if(DPT_l1[cpu][signature].conf > 0){                                 // prefetch only when conf>0 for CPLX
-                prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
-                cmp_1++;
-                num_prefs++;
-                SIG_DP(cout << pref_offset << ", ");
-            }
-            signature = update_sig_l1(signature, DPT_l1[cpu][signature].delta);
-        }
     } 
+    
+    /*************************************RIP COMPLEX CLASS*********************************************/
 
 // if no prefetches are issued till now, speculatively issue a next_line prefetch
 if(num_prefs == 0 && spec_nl[cpu] == 1){                                        // NL IP
     uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE;  
     metadata = encode_metadata(1, NL_TYPE, spec_nl[cpu]);
     prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
-    nl_1++;
     SIG_DP(cout << "1, ");
 }
 
@@ -406,13 +373,6 @@ void CACHE::l1d_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way,
 }
 void CACHE::l1d_prefetcher_final_stats()
 {
-    double t = 1.0*(gs_1 + cs_1 + cmp_1 + nl_1); 
-    cout << "L1D stats : " << endl;
-    cout << "GS : " << gs_1/t << endl;
-    cout << "CS : " << cs_1/t << endl;
-    cout << "CM : " << cmp_1/t << endl;
-    cout << "NL : " << nl_1/t << endl;
-cout << "------------------" << endl;
 cout << endl;
 }
 

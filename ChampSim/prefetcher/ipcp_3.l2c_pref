@@ -41,8 +41,6 @@ class IP_TRACKER {
         stride = 0;
     };
 };
-// stats
-int nl_2 = 0, cs_2 = 0, gs_2 = 0;
 
 uint32_t spec_nl_l2[NUM_CPUS] = {0};
 IP_TRACKER trackers[NUM_CPUS][NUM_IP_TABLE_L2_ENTRIES];
@@ -93,7 +91,6 @@ int index = ip & ((1 << NUM_IP_INDEX_BITS)-1);
         // issue a next line prefetch upon encountering new IP
         uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE;
         prefetch_line(ip, addr, pf_address, FILL_L2, 0);
-        nl_2++;
         SIG_DP(cout << "1, ");
         return metadata_in;
     }
@@ -107,6 +104,10 @@ if(type == PREFETCH){
     trackers[cpu][index].stride = stride;
     spec_nl_l2[cpu] = metadata_in & 0x1000;
 }
+
+// if (MSHR.occupancy > MSHR.SIZE-2){
+//     return metadata_in;
+// }
 
 SIG_DP(
 cout << ip << ", " << cache_hit << ", " << cl_addr << ", ";
@@ -126,18 +127,14 @@ cout << ", " << stride << "; ";
                 // Check if prefetch address is in same 4 KB page
                 if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE))
                     break;
+                
                 prefetch_line(ip, addr, pf_address, FILL_L2,0);
-                if (trackers[cpu][index].pref_type == 0x100)
-                    gs_2++;
-                else 
-                    cs_2++;
                 SIG_DP(cout << trackers[cpu][index].stride << ", ");
             }
         }
         else if(trackers[cpu][index].pref_type == 0x400 && spec_nl_l2[cpu] > 0){
         uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE;   
         prefetch_line(ip, addr, pf_address, FILL_L2, 0);
-        nl_2++;
         SIG_DP(cout << "1;");
         }
     }
@@ -153,12 +150,6 @@ return metadata_in;
 
 void CACHE::l2c_prefetcher_final_stats()
 {
-    double t = 1.0*(gs_2 + cs_2 + nl_2); 
-    cout << "L2C stats : " << endl;
-    cout << "GS : " << gs_2/t << endl;
-    cout << "CS : " << cs_2/t << endl;
-    cout << "NL : " << nl_2/t << endl;
-cout << "------------------" << endl;
-cout << endl;
+
 }
 

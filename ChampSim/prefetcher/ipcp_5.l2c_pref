@@ -93,7 +93,7 @@ int index = ip & ((1 << NUM_IP_INDEX_BITS)-1);
         // issue a next line prefetch upon encountering new IP
         uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE;
         prefetch_line(ip, addr, pf_address, FILL_L2, 0);
-        nl_2++;
+        gs_2++;
         SIG_DP(cout << "1, ");
         return metadata_in;
     }
@@ -126,11 +126,9 @@ cout << ", " << stride << "; ";
                 // Check if prefetch address is in same 4 KB page
                 if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE))
                     break;
+                
                 prefetch_line(ip, addr, pf_address, FILL_L2,0);
-                if (trackers[cpu][index].pref_type == 0x100)
-                    gs_2++;
-                else 
-                    cs_2++;
+                cs_2++;
                 SIG_DP(cout << trackers[cpu][index].stride << ", ");
             }
         }

@@ -12,15 +12,15 @@ Biswabandan Panda - biswap@cse.iitk.ac.in
 
 #include "cache.h"
 
-int arr[256];
-uint64_t pre = 0;
-int counter = 0;
-int prog = 0;
-int th = 10;
-int N = 4;
-bool done[64];
-
-
+/******************************************Initializing requred parameters for PAGE based prefetching******************/
+int arr[256];                                                                       // array for maintaining the stats of the page addresses that were accessed
+uint64_t pre = 0;                                                                   // store the page address of the previous page accessed
+int counter = 0;                                                                    // to maintain the confidence of the current page address that is being accessed
+int prog = 0;                                                                       // 
+int th = 3;                                                                         // threshold for triggering a prefetch
+int N = 4;                                                                          // prefetch degree
+bool done[64];                                                                      // to store whether a page had been prefetched earlier
+/***********************************************************************************************************************/
 
 void CACHE::llc_prefetcher_initialize() 
 {
@@ -35,44 +35,36 @@ uint32_t CACHE::llc_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache
   uint64_t curr_page = addr >> LOG2_PAGE_SIZE;
   uint64_t cl_page = (((addr >> LOG2_PAGE_SIZE) << LOG2_PAGE_SIZE)) >> LOG2_BLOCK_SIZE;
   uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
-  // if (pre != curr_page && counter > th){
-  //   counter--;
-  // }
-  if (pre != curr_page){
+
+  // if a change in page address is detected, then decrease the confidence
+  if (pre != curr_page && counter > th){
     counter--;
+  }
+  // if change in page address has been detected, and confidence has not built up above a threshold, then refresh counter
+  else if (pre != curr_page){
+    counter = 0;
     pre = curr_page;
     for (int i = 0; i < 64; i++){
       done[i] = 0;
     }
   }
+  // increment counter
   else counter++;
+
+  // for stats
   // int64_t d = curr_page - pre;
   // if (d <= 100 && d >= -100){
   //   arr[d+100]++;
   // }
   // counter[curr_page%256]++;
-  cout<<curr_page<<endl;
+  // uint64_t pf_address = ((cl_addr+1) << LOG2_BLOCK_SIZE);
+  // prefetch_line(ip, addr, pf_address, FILL_LLC, metadata_in);
 
-  if (counter > th){
-    int depth = 4;
-    for (uint64_t i = cl_addr+1; i < cl_page + 64; i++){
-      // if (done[i-cl_page]){
-      //   continue;
-      // }
-      // else{
-        uint64_t pf_address = ((i) << LOG2_BLOCK_SIZE);
-        prefetch_line(ip, addr, pf_address, FILL_LLC, metadata_in);
-        done[i-cl_page] = 1;
-        depth--;
-      // }
-      // cout << i - cl_page << endl;;
-      if (!depth) break;
-    }
-  }
-
-    if (counter > th + 2){
-    int depth = 5;
-    for (uint64_t i = cl_page+1; i < cl_page + 64; i++){
+  // to decide whether to prefetch the page or not
+  // if confidence is very high, then have a higher prefetch degree
+   if (counter > th + 2){
+    int depth = 10;                                                             // prefetch depth
+    for (uint64_t i = cl_page; i < cl_page + 64; i++){
       if (done[i-cl_page]){
         continue;
       }
@@ -86,6 +78,24 @@ uint32_t CACHE::llc_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache
     }
   }
 
+  // if confidence is not so high, then have a lower prefetch degree
+  if (counter > th){
+    int depth = 8;                                                          // prefetch depth
+    for (uint64_t i = cl_addr+1; i < cl_page + 64; i++){
+      if (done[i-cl_page]){
+        continue;
+      }
+      else{
+        uint64_t pf_address = ((i) << LOG2_BLOCK_SIZE);
+        prefetch_line(ip, addr, pf_address, FILL_LLC, metadata_in);
+        done[i-cl_page] = 1;
+        depth--;
+      }
+      // cout << i - cl_page << endl;;
+      if (!depth) break;
+    }
+  }
+
   return metadata_in;
 }
 
@@ -95,7 +105,8 @@ uint32_t CACHE::llc_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t 
 }
 
 void CACHE::llc_prefetcher_final_stats()
-{
+{ 
+  // for stats
   // cout << " LLC page access stats " << endl;
   // for (int i = 0; i < 100; i++){
   //   cout << arr[i] << " ";

@@ -9,7 +9,6 @@ Samuel Pakalapati - pakalapatisamuel@gmail.com
 Biswabandan Panda - biswap@cse.iitk.ac.in
 ******************************************************/
 
-
 #include "cache.h"
 
 void CACHE::llc_prefetcher_initialize() 
@@ -18,7 +17,8 @@ void CACHE::llc_prefetcher_initialize()
 }
 
 uint32_t CACHE::llc_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint32_t metadata_in)
-{
+{ 
+
   return metadata_in;
 }
 

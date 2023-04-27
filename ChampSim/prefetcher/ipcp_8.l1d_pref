@@ -74,9 +74,15 @@ uint64_t num_misses[NUM_CPUS];
 float mpkc[NUM_CPUS] = {0};
 int spec_nl[NUM_CPUS] = {0};
 
-
-// stats 
-int nl_1 = 0, gs_1 = 0, cs_1 = 0, cmp_1 = 0;
+/************************************************INITIALIZING VARIABLES REQUIRED FOR MODIFIED NEXTLINE*********************************/
+int jump[41];                                                                   // to store the frequency of the jumps
+uint64_t prev_add = 0;                                                          // previous address for which memory access request was generated
+int tot = 0;                                                                    // to store the total number prefetch requests seen till now (mod 1000 counter)
+int f = 0,s = 0;                                                                // for stats
+int pre = 1;                                                                    // to store the previous stride that has been observed
+int nl = 1;                                                                     // to store the delta (stride) which has been seen the most number of times in previous 1000 or so prefetch requests
+int maxi = 1;                                                                   // store the stride which occured maximum number of times in the last 1000 or so prefetch requests
+/**************************************************************************************************************************************/
 
 
 /***************Updating the signature*************************************/ 
@@ -182,14 +188,11 @@ void CACHE::l1d_prefetcher_initialize()
 {
 
 }
-uint64_t pre = 0;
+
 void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type)
 {
 
     uint64_t curr_page = addr >> LOG2_PAGE_SIZE;
-    int del = curr_page-pre;
-    if (pre != 0) cout << del << endl;
-    pre = curr_page;
     uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
     uint64_t cl_offset = (addr >> LOG2_BLOCK_SIZE) & 0x3F;
     uint16_t signature = 0, last_signature = 0;
@@ -198,6 +201,55 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
     int num_prefs = 0;
     uint32_t metadata=0;
     uint16_t ip_tag = (ip >> NUM_IP_INDEX_BITS) & ((1 << NUM_IP_TAG_BITS)-1);
+
+    int j = cl_addr - prev_add;
+    nl = pre;
+
+    // for stats 
+    // if (j == -1){
+    //     s++;
+    // }
+    // if (j == 1){
+    //     f++;
+    // }
+
+    if (j >= 0 && j <= 20){
+        jump[2*j]++;
+        if (maxi < jump[2*j]){
+            maxi = jump[2*j];
+        }
+    }
+    if (j < 0 && j >= -20){
+        jump[-2*j-1]++;
+        if (maxi < jump[-2*j-1]){
+            maxi = jump[-12*j-1];
+        }
+    }
+    if (tot%1000 == 0){
+        pre = maxi;
+        for (int i = 0; i < 41; i++){
+            jump[i] = 0;
+        }
+    }
+
+    // for stats
+    // if (tot%10 == 0){
+    //     // cout << 2;
+    //     pre = f;
+    //     if (s > f){
+    //         pre = s;
+    //         // cout << 1;
+    //     }
+    //     // for (int )
+    //     s = 0;
+    //     f = 0;
+    // }
+    // for (int i = 0; i < 41; i++){
+    //     if 
+    // }
+
+    prev_add = cl_addr;
+    tot++;
 
 if(NUM_CPUS == 1){
     prefetch_degree = 3;
@@ -244,7 +296,6 @@ if(num_misses[cpu] == 256){
         uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE; // BASE NL=1, changing it to 3
         metadata = encode_metadata(1, NL_TYPE, spec_nl[cpu]);
         prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
-        nl_1++;
         return;
     }
     else {                                                     // if same IP encountered, set valid bit
@@ -302,7 +353,50 @@ cout << last_signature<< ", "  << DPT_l1[cpu][last_signature].delta<< ", "  << D
 cout << trackers_l1[cpu][index].last_stride << ", " << stride << ", " << trackers_l1[cpu][index].conf << ", " << "; ";
 );
 
-    if(trackers_l1[cpu][index].str_valid == 1){                         // stream IP
+    /********************************************************CLASSES REORDERD*********************************************************/
+    // First Complex 
+    if(DPT_l1[cpu][signature].conf >= 0 && DPT_l1[cpu][signature].delta != 0) {  // if conf>=0, continue looking for delta
+        int pref_offset = 0,i=0;                                                        // CPLX IP
+        for (i=0; i<prefetch_degree; i++) {
+            pref_offset += DPT_l1[cpu][signature].delta;
+            uint64_t pf_address = ((cl_addr + pref_offset) << LOG2_BLOCK_SIZE);
+
+            // Check if prefetch address is in same 4 KB page
+            if (((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)) || 
+                    (DPT_l1[cpu][signature].conf == -1) ||
+                    (DPT_l1[cpu][signature].delta == 0)){
+                // if new entry in DPT or delta is zero, break
+                break;
+            }
+
+            // we are not prefetching at L2 for CPLX type, so encode delta as 0
+            metadata = encode_metadata(0, CPLX_TYPE, spec_nl[cpu]);
+            if(DPT_l1[cpu][signature].conf > 0){                                 // prefetch only when conf>0 for CPLX
+                prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
+                num_prefs++;
+                SIG_DP(cout << pref_offset << ", ");
+            }
+            signature = update_sig_l1(signature, DPT_l1[cpu][signature].delta);
+        }
+    } 
+    // Then Constant stride
+    else if(trackers_l1[cpu][index].conf > 1 && trackers_l1[cpu][index].last_stride != 0){            // CS IP  
+        for (int i=0; i<prefetch_degree; i++) {
+            uint64_t pf_address = (cl_addr + (trackers_l1[cpu][index].last_stride*(i+1))) << LOG2_BLOCK_SIZE;
+
+            // Check if prefetch address is in same 4 KB page
+            if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)){
+                break;
+            }
+
+            metadata = encode_metadata(trackers_l1[cpu][index].last_stride, CS_TYPE, spec_nl[cpu]);
+            prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
+            num_prefs++;
+            SIG_DP(cout << trackers_l1[cpu][index].last_stride << ", ");
+        }
+    }
+    // Then global stride
+    else if(trackers_l1[cpu][index].str_valid == 1){                         // stream IP
         // for stream, prefetch with twice the usual degree
             prefetch_degree = prefetch_degree*2;
         for (int i=0; i<prefetch_degree; i++) {
@@ -324,57 +418,17 @@ cout << trackers_l1[cpu][index].last_stride << ", " << stride << ", " << tracker
 
             prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
             num_prefs++;
-            gs_1++;
             SIG_DP(cout << "1, ");
             }
 
-    } else if(trackers_l1[cpu][index].conf > 1 && trackers_l1[cpu][index].last_stride != 0){            // CS IP  
-        for (int i=0; i<prefetch_degree; i++) {
-            uint64_t pf_address = (cl_addr + (trackers_l1[cpu][index].last_stride*(i+1))) << LOG2_BLOCK_SIZE;
-
-            // Check if prefetch address is in same 4 KB page
-            if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)){
-                break;
-            }
-
-            metadata = encode_metadata(trackers_l1[cpu][index].last_stride, CS_TYPE, spec_nl[cpu]);
-            prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
-            cs_1++;
-            num_prefs++;
-            SIG_DP(cout << trackers_l1[cpu][index].last_stride << ", ");
-        }
-    } else if(DPT_l1[cpu][signature].conf >= 0 && DPT_l1[cpu][signature].delta != 0) {  // if conf>=0, continue looking for delta
-        int pref_offset = 0,i=0;                                                        // CPLX IP
-        for (i=0; i<prefetch_degree; i++) {
-            pref_offset += DPT_l1[cpu][signature].delta;
-            uint64_t pf_address = ((cl_addr + pref_offset) << LOG2_BLOCK_SIZE);
-
-            // Check if prefetch address is in same 4 KB page
-            if (((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)) || 
-                    (DPT_l1[cpu][signature].conf == -1) ||
-                    (DPT_l1[cpu][signature].delta == 0)){
-                // if new entry in DPT or delta is zero, break
-                break;
-            }
-
-            // we are not prefetching at L2 for CPLX type, so encode delta as 0
-            metadata = encode_metadata(0, CPLX_TYPE, spec_nl[cpu]);
-            if(DPT_l1[cpu][signature].conf > 0){                                 // prefetch only when conf>0 for CPLX
-                prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
-                cmp_1++;
-                num_prefs++;
-                SIG_DP(cout << pref_offset << ", ");
-            }
-            signature = update_sig_l1(signature, DPT_l1[cpu][signature].delta);
-        }
     } 
-
+    
 // if no prefetches are issued till now, speculatively issue a next_line prefetch
 if(num_prefs == 0 && spec_nl[cpu] == 1){                                        // NL IP
-    uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE;  
-    metadata = encode_metadata(1, NL_TYPE, spec_nl[cpu]);
+    uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+nl) << LOG2_BLOCK_SIZE;
+    cout << nl << " ";  
+    metadata = encode_metadata(nl, NL_TYPE, spec_nl[cpu]);
     prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
-    nl_1++;
     SIG_DP(cout << "1, ");
 }
 
@@ -406,13 +460,6 @@ void CACHE::l1d_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way,
 }
 void CACHE::l1d_prefetcher_final_stats()
 {
-    double t = 1.0*(gs_1 + cs_1 + cmp_1 + nl_1); 
-    cout << "L1D stats : " << endl;
-    cout << "GS : " << gs_1/t << endl;
-    cout << "CS : " << cs_1/t << endl;
-    cout << "CM : " << cmp_1/t << endl;
-    cout << "NL : " << nl_1/t << endl;
-cout << "------------------" << endl;
 cout << endl;
 }
 

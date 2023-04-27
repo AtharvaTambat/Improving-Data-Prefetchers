@@ -135,7 +135,7 @@ cout << ", " << stride << "; ";
             }
         }
         else if(trackers[cpu][index].pref_type == 0x400 && spec_nl_l2[cpu] > 0){
-        uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE;   
+        uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+stride) << LOG2_BLOCK_SIZE;   
         prefetch_line(ip, addr, pf_address, FILL_L2, 0);
         nl_2++;
         SIG_DP(cout << "1;");

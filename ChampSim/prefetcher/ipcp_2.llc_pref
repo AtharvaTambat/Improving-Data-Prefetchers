@@ -9,46 +9,6 @@ Samuel Pakalapati - pakalapatisamuel@gmail.com
 Biswabandan Panda - biswap@cse.iitk.ac.in
 ******************************************************/
 
-// class PAGE_TABLE{
-// public:
-//   int page_addr; // stores the address shifted by 12 bits (left)
-//   int corline_info;
-
-//   PAGE_TABLE(){
-//     page_addr = 0;
-//     corline_info = 0;
-//   }
-// };
-
-// class CORR_LINE_TABLE{
-// public:
-//   int 
-// };
-
-// Page Table
-
-class PAGE_TABLE{
-public:
-    int corr_line_table[64][8]; // to store the set of 8 correlated cache lines associated with the page
-    short int valid[64][8]; // to store whether the cache line is valid or not
-    int ordering[64][8]; // to decide which line to prefetch based on the frequency of accesses
-    int hits[64]; // to keep track of the number of hits on a page
-
-    PAGE_TABLE(){
-      for(int i = 0;i<64;i++){
-        for (int j = 0;j<8;j++){
-          corr_line_table[i][j] = 0;
-          valid[i][j] = 0;
-          ordering[i][j] = 7;
-        }
-        hits[i] = 0;
-      }
-    }
-};
-
-PAGE_TABLE page_learning_table;
-int prev_page_addr = 0;
-#define CONS_HIT_THRESH 3
 
 #include "cache.h"
 
@@ -58,29 +18,7 @@ void CACHE::llc_prefetcher_initialize()
 }
 
 uint32_t CACHE::llc_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint32_t metadata_in)
-{ 
-  uint64_t curr_page = addr >> LOG2_PAGE_SIZE;
-  uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
-
-  // Updating the PAGE_TABLE
-  page_learning_table.corr_line_table[curr_page%64][cl_addr%8] = cl_addr;
-  page_learning_table.valid[curr_page%64][cl_addr%8] = 1;
-  if(prev_page_addr == curr_page){
-    page_learning_table.hits[curr_page%64]++;
-  }
-  else{
-    page_learning_table.hits[prev_page_addr%64] = 0;
-  }
-
-  prefetch_line(ip, addr, (addr >> LOG2_BLOCK_SIZE) << LOG2_BLOCK_SIZE, FILL_LLC, metadata_in);
-  // Deciding whether to prefetch or not based on the number of previous hits
-  for (int i = 0;i<8;i++){
-    if (page_learning_table.valid[curr_page%64][i] && page_learning_table.hits[curr_page%64]>CONS_HIT_THRESH){
-        uint64_t pf_address = (page_learning_table.corr_line_table[curr_page%64][i] << LOG2_BLOCK_SIZE);
-        prefetch_line(ip, addr, pf_address, FILL_LLC, metadata_in);
-    }
-  }
-
+{
   return metadata_in;
 }
 

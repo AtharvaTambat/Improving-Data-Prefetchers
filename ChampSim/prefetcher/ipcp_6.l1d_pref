@@ -19,6 +19,7 @@ Biswabandan Panda - biswap@cse.iitk.ac.in
 #define CS_TYPE 2                                           // constant stride
 #define CPLX_TYPE 3                                         // complex stride
 #define NL_TYPE 4                                           // next line
+#define CMPLX_THRESH 9                                     // Threshold above which cumulative confidence will give prefetch
 
 // #define SIG_DEBUG_PRINT
 #ifdef SIG_DEBUG_PRINT
@@ -39,6 +40,9 @@ class IP_TABLE_L1 {
     uint16_t str_dir;                                       // stream direction
     uint16_t str_valid;                                     // stream valid
     uint16_t str_strength;                                  // stream strength
+    int pc1;                                                // current pc geerating memory access
+    int pc2;                                                // previous pc geerating memory access
+    int pc3;                                                // prev prev pc generating memory access
 
     IP_TABLE_L1 () {
         ip_tag = 0;
@@ -51,6 +55,9 @@ class IP_TABLE_L1 {
         str_dir = 0;
         str_valid = 0;
         str_strength = 0;
+        pc1 = 0;
+        pc2 = 0;
+        pc3 = 0;
     };
 };
 
@@ -65,19 +72,46 @@ public:
     };        
 };
 
+// to store delta (stride values) and their corresponding confidence related to the PC hash 
+class DELTA_PRED_PC {
+public:
+    int delta;
+    int conf;
+
+    DELTA_PRED_PC(){
+        delta = 0;
+        conf = 0;
+    }
+};
+
+// to store delta (stride values) and their corresponding confidence related to the PAGE ^ GLOBAL CONFIDENCE hash
+class DELTA_PAGE_XOR_CONF {
+public:
+    int delta;
+    int conf; // confidence for pages ranges from 0 to 100
+
+    DELTA_PAGE_XOR_CONF(){
+        delta = 0;
+        conf = 0;
+    }
+};
+
 
 IP_TABLE_L1 trackers_l1[NUM_CPUS][NUM_IP_TABLE_L1_ENTRIES];
 DELTA_PRED_TABLE DPT_l1[NUM_CPUS][4096];
+// for storing the previous pc confidences
+DELTA_PRED_PC DPT_PC_l1[NUM_CPUS][4096];
+// for storing the previous page onfidences
+DELTA_PAGE_XOR_CONF DPT_PAGE_XOR_CONF_l1[NUM_CPUS][1<<(24 - LOG2_PAGE_SIZE)];
+int GLOBAL_CONFIDENCE = 0; // saturating counter from 0 to 100
 uint64_t ghb_l1[NUM_CPUS][NUM_GHB_ENTRIES];
 uint64_t prev_cpu_cycle[NUM_CPUS];
 uint64_t num_misses[NUM_CPUS];
 float mpkc[NUM_CPUS] = {0};
 int spec_nl[NUM_CPUS] = {0};
 
-
 // stats 
 int nl_1 = 0, gs_1 = 0, cs_1 = 0, cmp_1 = 0;
-
 
 /***************Updating the signature*************************************/ 
 uint16_t update_sig_l1(uint16_t old_sig, int delta){                           
@@ -91,7 +125,15 @@ uint16_t update_sig_l1(uint16_t old_sig, int delta){
     return new_sig;
 }
 
+// return index corresponding to the PC hash
+uint16_t pc_hash(uint16_t pc1, uint16_t pc2, uint16_t pc3){
+    return ((pc1)^(pc2>>1)^(pc3>>2)) & ((1<<12) - 1);
+}
 
+// return index corresponding to the curr_page address
+uint16_t page_xor_conf_hash(uint curr_page){
+    return ((curr_page)^GLOBAL_CONFIDENCE) & ((1<<(24 - LOG2_PAGE_SIZE)) - 1);
+}
 
 /****************Encoding the metadata***********************************/
 uint32_t encode_metadata(int stride, uint16_t type, int spec_nl){
@@ -178,18 +220,29 @@ int update_conf(int stride, int pred_stride, int conf){
 return conf;
 }
 
+int update_conf_page(int stride, int pred_stride, int conf){
+    if(stride == pred_stride){             
+        conf++;
+        if(conf > 200)
+            conf = 200;
+    } else {
+        conf--;
+        if(conf < 0)
+            conf = 0;
+    }
+
+return conf;
+}
+
 void CACHE::l1d_prefetcher_initialize() 
 {
 
 }
-uint64_t pre = 0;
+
 void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type)
 {
 
     uint64_t curr_page = addr >> LOG2_PAGE_SIZE;
-    int del = curr_page-pre;
-    if (pre != 0) cout << del << endl;
-    pre = curr_page;
     uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
     uint64_t cl_offset = (addr >> LOG2_BLOCK_SIZE) & 0x3F;
     uint16_t signature = 0, last_signature = 0;
@@ -198,6 +251,8 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
     int num_prefs = 0;
     uint32_t metadata=0;
     uint16_t ip_tag = (ip >> NUM_IP_INDEX_BITS) & ((1 << NUM_IP_TAG_BITS)-1);
+    int last_pc1 = 0, last_pc2 = 0, last_pc3 = 0;
+    int pc1 = 0, pc2 = 0, pc3 = 0;
 
 if(NUM_CPUS == 1){
     prefetch_degree = 3;
@@ -236,6 +291,10 @@ if(num_misses[cpu] == 256){
         trackers_l1[cpu][index].str_strength = 0;
         trackers_l1[cpu][index].str_dir = 0;
         trackers_l1[cpu][index].ip_valid = 1;
+        // CHANGES MADE
+        trackers_l1[cpu][index].pc1 = 0;
+        trackers_l1[cpu][index].pc2 = 0;
+        trackers_l1[cpu][index].pc3 = 0;
     } else {                                                    // otherwise, reset valid bit and leave the previous IP as it is
         trackers_l1[cpu][index].ip_valid = 0;
     }
@@ -282,16 +341,46 @@ if(trackers_l1[cpu][index].conf == 0)
     trackers_l1[cpu][index].last_stride = stride;
 
 last_signature = trackers_l1[cpu][index].signature;
+last_pc1 = trackers_l1[cpu][index].pc1;
+last_pc2 = trackers_l1[cpu][index].pc2;
+last_pc3 = trackers_l1[cpu][index].pc3;
+
+int last_hash = pc_hash(last_pc1, last_pc2, last_pc3);
+
+int last_page_xor_conf_hash = page_xor_conf_hash(trackers_l1[cpu][index].last_page);
+
 // update complex stride(CPLX) confidence
 DPT_l1[cpu][last_signature].conf = update_conf(stride, DPT_l1[cpu][last_signature].delta, DPT_l1[cpu][last_signature].conf);
+// update PC hash based feature confidence
+DPT_PC_l1[cpu][last_hash].conf = update_conf(stride, DPT_PC_l1[cpu][last_hash].delta, DPT_PC_l1[cpu][last_hash].conf);
+// update page xor confidence feature's confidence
+DPT_PAGE_XOR_CONF_l1[cpu][last_page_xor_conf_hash].conf = update_conf(stride, DPT_PAGE_XOR_CONF_l1[cpu][last_page_xor_conf_hash].delta, DPT_PAGE_XOR_CONF_l1[cpu][last_page_xor_conf_hash].conf);
+GLOBAL_CONFIDENCE = update_conf_page(stride, DPT_PAGE_XOR_CONF_l1[cpu][last_page_xor_conf_hash].delta, DPT_PAGE_XOR_CONF_l1[cpu][last_page_xor_conf_hash].conf);
+
+// calculate the old cumulative confidence
+int old_cumulative_conf = DPT_l1[cpu][last_signature].conf + DPT_PC_l1[cpu][last_hash].conf  + 3*DPT_PAGE_XOR_CONF_l1[cpu][last_page_xor_conf_hash].conf;
 
 // update CPLX only if confidence is zero
-if(DPT_l1[cpu][last_signature].conf == 0)
+if(old_cumulative_conf == 0){
     DPT_l1[cpu][last_signature].delta = stride;
+    DPT_PC_l1[cpu][last_hash].delta = stride;
+    DPT_PAGE_XOR_CONF_l1[cpu][last_page_xor_conf_hash].delta = stride;
+}
 
 // calculate and update new signature in IP table
 signature = update_sig_l1(last_signature, stride);
 trackers_l1[cpu][index].signature = signature;
+// calculating the new pc1, pc2, pc3 values
+pc1 = ip;
+pc2 = last_pc1;
+pc3 = last_pc2;
+int new_hash = pc_hash(pc1,pc2,pc3);
+trackers_l1[cpu][index].pc1 = pc1;
+trackers_l1[cpu][index].pc2 = pc2;
+trackers_l1[cpu][index].pc3 = pc3;
+// updating the new page in the IP table
+trackers_l1[cpu][index].last_page = curr_page;
+int new_page_xor_conf_hash = page_xor_conf_hash(curr_page);
 
 // check GHB for stream IP
 check_for_stream_l1(index, cl_addr, cpu);           
@@ -302,7 +391,55 @@ cout << last_signature<< ", "  << DPT_l1[cpu][last_signature].delta<< ", "  << D
 cout << trackers_l1[cpu][index].last_stride << ", " << stride << ", " << trackers_l1[cpu][index].conf << ", " << "; ";
 );
 
-    if(trackers_l1[cpu][index].str_valid == 1){                         // stream IP
+    /************************REORDERING OF THE CHECKS FOR CLASS OF STRIDE*************************************************/
+    // First Complex
+    if(DPT_l1[cpu][signature].conf + DPT_PC_l1[cpu][new_hash].conf  + 3*DPT_PAGE_XOR_CONF_l1[cpu][new_page_xor_conf_hash].conf >= 0 && DPT_l1[cpu][signature].delta != 0) {  // if conf>=0, continue looking for delta
+        int pref_offset = 0,i=0;                                                        // CPLX IP
+        for (i=0; i<prefetch_degree; i++) {
+            pref_offset += DPT_l1[cpu][signature].delta;
+            uint64_t pf_address = ((cl_addr + pref_offset) << LOG2_BLOCK_SIZE);
+
+            // Check if prefetch address is in same 4 KB page
+            if (((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)) || 
+                    (DPT_l1[cpu][signature].conf == -1) ||
+                    (DPT_l1[cpu][signature].delta == 0)){
+                // if new entry in DPT or delta is zero, break
+                break;
+            }
+
+            // we are not prefetching at L2 for CPLX type, so encode delta as 0
+            metadata = encode_metadata(0, CPLX_TYPE, spec_nl[cpu]);
+            if(DPT_l1[cpu][signature].conf + DPT_PC_l1[cpu][new_hash].conf + 3*DPT_PAGE_XOR_CONF_l1[cpu][new_page_xor_conf_hash].conf > CMPLX_THRESH && pf_address>0){                                 // prefetch only when conf>0 for CPLX
+                prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
+                cmp_1++;
+                num_prefs++;
+                SIG_DP(cout << pref_offset << ", ");
+            }
+            signature = update_sig_l1(signature, DPT_l1[cpu][signature].delta);
+            // not updating the PC value because prefetching multuple addresses at once, will not change PC value
+            // update the hash if the pf_address went to a new page
+            new_page_xor_conf_hash = page_xor_conf_hash(pf_address >> LOG2_PAGE_SIZE);
+        }
+    } 
+    // Then Constant stride
+    else if(trackers_l1[cpu][index].conf > 1 && trackers_l1[cpu][index].last_stride != 0){            // CS IP  
+        for (int i=0; i<prefetch_degree; i++) {
+            uint64_t pf_address = (cl_addr + (trackers_l1[cpu][index].last_stride*(i+1))) << LOG2_BLOCK_SIZE;
+
+            // Check if prefetch address is in same 4 KB page
+            if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)){
+                break;
+            }
+
+            metadata = encode_metadata(trackers_l1[cpu][index].last_stride, CS_TYPE, spec_nl[cpu]);
+            prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
+            cs_1++;
+            num_prefs++;
+            SIG_DP(cout << trackers_l1[cpu][index].last_stride << ", ");
+        }
+    } 
+    // Then Global stride
+    else if(trackers_l1[cpu][index].str_valid == 1){                         // stream IP
         // for stream, prefetch with twice the usual degree
             prefetch_degree = prefetch_degree*2;
         for (int i=0; i<prefetch_degree; i++) {
@@ -323,52 +460,12 @@ cout << trackers_l1[cpu][index].last_stride << ", " << stride << ", " << tracker
             }
 
             prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
-            num_prefs++;
             gs_1++;
+            num_prefs++;
             SIG_DP(cout << "1, ");
             }
 
-    } else if(trackers_l1[cpu][index].conf > 1 && trackers_l1[cpu][index].last_stride != 0){            // CS IP  
-        for (int i=0; i<prefetch_degree; i++) {
-            uint64_t pf_address = (cl_addr + (trackers_l1[cpu][index].last_stride*(i+1))) << LOG2_BLOCK_SIZE;
-
-            // Check if prefetch address is in same 4 KB page
-            if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)){
-                break;
-            }
-
-            metadata = encode_metadata(trackers_l1[cpu][index].last_stride, CS_TYPE, spec_nl[cpu]);
-            prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
-            cs_1++;
-            num_prefs++;
-            SIG_DP(cout << trackers_l1[cpu][index].last_stride << ", ");
-        }
-    } else if(DPT_l1[cpu][signature].conf >= 0 && DPT_l1[cpu][signature].delta != 0) {  // if conf>=0, continue looking for delta
-        int pref_offset = 0,i=0;                                                        // CPLX IP
-        for (i=0; i<prefetch_degree; i++) {
-            pref_offset += DPT_l1[cpu][signature].delta;
-            uint64_t pf_address = ((cl_addr + pref_offset) << LOG2_BLOCK_SIZE);
-
-            // Check if prefetch address is in same 4 KB page
-            if (((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)) || 
-                    (DPT_l1[cpu][signature].conf == -1) ||
-                    (DPT_l1[cpu][signature].delta == 0)){
-                // if new entry in DPT or delta is zero, break
-                break;
-            }
-
-            // we are not prefetching at L2 for CPLX type, so encode delta as 0
-            metadata = encode_metadata(0, CPLX_TYPE, spec_nl[cpu]);
-            if(DPT_l1[cpu][signature].conf > 0){                                 // prefetch only when conf>0 for CPLX
-                prefetch_line(ip, addr, pf_address, FILL_L1, metadata);
-                cmp_1++;
-                num_prefs++;
-                SIG_DP(cout << pref_offset << ", ");
-            }
-            signature = update_sig_l1(signature, DPT_l1[cpu][signature].delta);
-        }
     } 
-
 // if no prefetches are issued till now, speculatively issue a next_line prefetch
 if(num_prefs == 0 && spec_nl[cpu] == 1){                                        // NL IP
     uint64_t pf_address = ((addr>>LOG2_BLOCK_SIZE)+1) << LOG2_BLOCK_SIZE;  
@@ -415,4 +512,5 @@ void CACHE::l1d_prefetcher_final_stats()
 cout << "------------------" << endl;
 cout << endl;
 }
+
 
